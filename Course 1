@@ -1,0 +1,239 @@
+# Course 1 利用深度学习预测股票收益率
+
+import numpy as np
+import pandas as pd
+
+
+# 利用 AR(2) 模型生成随机数据, 样本为 600 个
+
+from statsmodels.tsa.arima_process import ArmaProcess
+
+# Define the AR and MA coefficients for an ARMA(2,0) model
+# AR coefficients are for lags 1 and 2 (with a leading 1 for the zero-th lag)
+# MA coefficients are for lags 1 and 2
+ar = np.array([1, -0.5, 0.4])
+ma = np.array([1])
+
+# Create the ARMA process
+arma_process = ArmaProcess(ar, ma)
+
+# Generate 600 samples
+sample_size = 600
+stock_returns = arma_process.generate_sample(nsample=sample_size)
+
+
+# 计算这些数据的均值和标准差
+mean_return = np.mean(stock_returns)
+std_return = np.std(stock_returns)
+
+mean_return, std_return
+
+
+# 日收益率数据的平均值在 0.03% 左右比较合理 (相当于一年是 7.5% = 0.03% * 250), 
+# 标准差则应该在 2% 左右 (相当于一年是 31.6% = 2% * sqrt(250))
+# 我们用线性变化将其均值、标准差控制在这个程度
+
+# Target mean and standard deviation
+target_mean = 0.03 / 100  # converting percentage to decimal
+target_std = 2 / 100      # converting percentage to decimal
+
+# Linear transformation of the data
+# new_data = a * data + b
+# To achieve the target mean and standard deviation, we calculate a and b
+# a = target_std / current_std
+# b = target_mean - a * current_mean
+a = target_std / std_return
+b = target_mean - a * mean_return
+
+# Apply the transformation
+transformed_stock_returns = a * stock_returns + b
+
+# Calculate the new mean and standard deviation
+new_mean = np.mean(transformed_stock_returns)
+new_std = np.std(transformed_stock_returns)
+
+new_mean, new_std
+
+
+# 现在数据符合要求了, 让我们画出数据的时间序列图像
+
+# Plot the transformed stock returns
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.plot(transformed_stock_returns, color='green')
+plt.title('Transformed Stock Returns with Mean 0.03% and Std. Dev. 2%')
+plt.xlabel('Time')
+plt.ylabel('Returns')
+plt.grid(True)
+plt.show()
+
+
+# 数据是非常乱的, 也许我们能有一种更直观的方式来看待这些数据
+# 假设初始股价 S_0 = 1, 随后股价按照 S_t = S_{t-1} * (1+r_t) 的方式生成, r_t 是我们生成的这些收益率
+
+# Initial stock price
+S_0 = 1
+
+# Generate the stock price series
+stock_prices = [S_0]
+for r_t in transformed_stock_returns:
+    S_t = stock_prices[-1] * (1 + r_t)
+    stock_prices.append(S_t)
+
+# Plot the stock price series
+plt.figure(figsize=(12, 6))
+plt.plot(stock_prices, color='red')
+plt.title('Stock Price Series based on Transformed Returns')
+plt.xlabel('Time')
+plt.ylabel('Stock Price')
+plt.grid(True)
+plt.show()
+
+
+# 接下去我们利用神经网络的方法预测股票收益率, 其中我们将前 500 个数据当作我们的样本, 后面 100 个数据当作测试集
+# 由于我们的数据简单, 我们用一个简单的两层神经网络来估计 r_{t+1} = f(r_t) 的函数关系
+
+from sklearn.model_selection import train_test_split
+import tensorflow as tf
+# 如果你没有安装 tensorflow
+# pip install tensorflow
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.optimizers.legacy import Adam
+
+# Prepare the data
+X = transformed_stock_returns[:-1]  # Features (all data points except the last and first)
+y = transformed_stock_returns[1:]   # Targets (all data points except the first two)
+
+# Split the data into training and testing sets
+X_train, X_test = X[:500], X[500:]
+y_train, y_test = y[:500], y[500:]
+
+# Reshape data for the neural network
+X_train = X_train.reshape(-1, 1)
+X_test = X_test.reshape(-1, 1)
+y_train = y_train.reshape(-1, 1)
+y_test = y_test.reshape(-1, 1)
+
+# Normalizing data
+meanX, stdX = np.mean(X_train), np.std(X_train)
+meany, stdy = np.mean(y_train), np.std(y_train)
+X_train, X_test = (X_train - meanX)/stdX, (X_test - meanX)/stdX
+y_train, y_test = (y_train - meany)/stdy, (y_test - meany)/stdy
+
+# Building a simple neural network model
+model = Sequential()
+model.add(Dense(64, input_dim=1, activation='relu'))
+model.add(Dense(32, activation='relu'))
+model.add(Dense(1))
+
+# Compile the model
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+
+# Train the model
+history = model.fit(X_train, y_train, epochs=50, batch_size=10, validation_data=(X_test, y_test), verbose=0)
+
+
+# 预测
+y_train_pred = model.predict(X_train)
+y_test_pred = model.predict(X_test)
+
+# 反规范化（如果应用了规范化）
+y_train_pred_original = y_train_pred * stdy + meany
+y_test_pred_original = y_test_pred * stdy + meany
+y_train = y_train * stdy + meany
+y_test = y_test * stdy + meany
+
+# 绘制样本内测试图
+plt.figure(figsize=(12, 6))
+plt.plot(y_train, label='Actual')
+plt.plot(y_train_pred_original, label='Predicted')
+plt.title('In-sample Prediction')
+plt.xlabel('Time')
+plt.ylabel('Returns')
+plt.legend()
+plt.show()
+
+# 绘制样本外测试图
+plt.figure(figsize=(12, 6))
+plt.plot(y_test, label='Actual')
+plt.plot(y_test_pred_original, label='Predicted')
+plt.title('Out-of-sample Prediction')
+plt.xlabel('Time')
+plt.ylabel('Returns')
+plt.legend()
+plt.show()
+
+
+# 模型的预测效果很一般, 这是由于我们只使用了过去一期的数据来预测未来, 而数据是用 ARMA(2,0) 生成的
+# 如果用过去 2 期作为自变量, 应该会好很多
+# 当然, 在真实的市场中, 我们不知道数据本身是符合怎么样的模型, 但至少数据是有自相关性的
+# 现在用 2 期模型
+
+# Prepare the data
+X_1 = transformed_stock_returns[1:-1]
+X_2 = transformed_stock_returns[:-2]
+X = pd.DataFrame()
+X['1'] = X_1
+X['2'] = X_2
+y = transformed_stock_returns[2:]
+
+# Split the data into training and testing sets
+X_train, X_test = X[:500], X[500:]
+y_train, y_test = y[:500], y[500:]
+
+# Reshape data for the neural network
+X_train = X_train.values.tolist()
+X_test = X_test.values.tolist()
+y_train = y_train.reshape(-1, 1)
+y_test = y_test.reshape(-1, 1)
+
+# Normalizing data
+meanX, stdX = np.mean(X_train), np.std(X_train)
+meany, stdy = np.mean(y_train), np.std(y_train)
+X_train, X_test = (X_train - meanX)/stdX, (X_test - meanX)/stdX
+y_train, y_test = (y_train - meany)/stdy, (y_test - meany)/stdy
+
+# Building a simple neural network model
+model = Sequential()
+model.add(Dense(64, input_dim=2, activation='relu'))
+model.add(Dense(32, activation='relu'))
+model.add(Dense(1))
+
+# Compile the model
+model.compile(optimizer=Adam(learning_rate=0.001), loss='mean_squared_error')
+
+# Train the model
+history = model.fit(X_train, y_train, epochs=50, batch_size=10, validation_data=(X_test, y_test), verbose=0)
+
+
+# 预测
+y_train_pred = model.predict(X_train)
+y_test_pred = model.predict(X_test)
+
+# 反规范化（如果应用了规范化）
+y_train_pred_original = y_train_pred * stdy + meany
+y_test_pred_original = y_test_pred * stdy + meany
+y_train = y_train * stdy + meany
+y_test = y_test * stdy + meany
+
+# 绘制样本内测试图
+plt.figure(figsize=(12, 6))
+plt.plot(y_train, label='Actual')
+plt.plot(y_train_pred_original, label='Predicted')
+plt.title('In-sample Prediction')
+plt.xlabel('Time')
+plt.ylabel('Returns')
+plt.legend()
+plt.show()
+
+# 绘制样本外测试图
+plt.figure(figsize=(12, 6))
+plt.plot(y_test, label='Actual')
+plt.plot(y_test_pred_original, label='Predicted')
+plt.title('Out-of-sample Prediction')
+plt.xlabel('Time')
+plt.ylabel('Returns')
+plt.legend()
+plt.show()
